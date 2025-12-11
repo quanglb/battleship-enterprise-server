@@ -1,6 +1,8 @@
 services:
+  # Service 1: Database (Your existing config)
   postgres:
     image: 'postgres:16'
+    container_name: battleship-db
     env_file:
       - .env
     environment:
@@ -11,6 +13,22 @@ services:
       - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+
+  # Service 2: The Spring Boot Application
+  app:
+    build: .
+    container_name: battleship-app
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    env_file:
+      - .env
+    environment:
+      # We override the URL to talk to the 'postgres' container internally
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
 
 volumes:
   postgres-data:
