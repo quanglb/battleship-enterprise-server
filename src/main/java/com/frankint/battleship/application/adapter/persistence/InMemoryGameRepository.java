@@ -47,6 +47,11 @@ public class InMemoryGameRepository implements GameRepository {
 
     }
 
+    @Override
+    public List<Game> findAll() {
+        return List.copyOf(store.values());
+    }
+
     private boolean isPlayerInGame(Game game, String playerId) {
         boolean isP1 = game.getPlayer1() != null && game.getPlayer1().getId().equals(playerId);
         boolean isP2 = game.getPlayer2() != null && game.getPlayer2().getId().equals(playerId);

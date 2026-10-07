@@ -15,10 +15,346 @@ let lastKnownState = null;
 let gameSub = null;  // Stores the game state subscription
 let errorSub = null; // Stores the error subscription
 let lastSunkCount = 0;
+let lastHitCountOpponent = 0;
+let lastMissCountOpponent = 0;
+let lastHitCountSelf = 0;
+let lastMissCountSelf = 0;
+let lastTurnPlayer = null;
+let bannerTimeout = null;
+
+// ================= SOUND MANAGER (WEB AUDIO API SYNTHESIS) =================
+const SoundFX = {
+    ctx: null,
+    bgmOsc1: null,
+    bgmOsc2: null,
+    bgmGain: null,
+    bgmInterval: null,
+    isMuted: false,
+
+    init() {
+        if (!this.ctx) {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                this.ctx = new AudioContext();
+            }
+        }
+        if (this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume();
+        }
+    },
+
+    toggleMute() {
+        this.isMuted = !this.isMuted;
+        const btn = document.getElementById('sound-toggle-btn');
+        if (btn) {
+            if (this.isMuted) {
+                btn.innerText = "🔇 Audio: OFF";
+                btn.classList.add('muted');
+                this.stopBGM();
+            } else {
+                btn.innerText = "🔊 Audio: ON";
+                btn.classList.remove('muted');
+                this.startBGM();
+            }
+        }
+    },
+
+    // Background Suspense Atmosphere (Sub-bass drone + subtle sonar pulses)
+    startBGM() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx || this.bgmOsc1) return;
+
+        try {
+            // Master low drone gain (rất nhỏ để không lấn át tiếng súng)
+            this.bgmGain = this.ctx.createGain();
+            this.bgmGain.gain.setValueAtTime(0.045, this.ctx.currentTime);
+            this.bgmGain.connect(this.ctx.destination);
+
+            // Drone 1: 55Hz (Sub-bass A1)
+            this.bgmOsc1 = this.ctx.createOscillator();
+            this.bgmOsc1.type = 'sawtooth';
+            this.bgmOsc1.frequency.setValueAtTime(55, this.ctx.currentTime);
+
+            // Drone 2: 58Hz (Binaural beating for tension)
+            this.bgmOsc2 = this.ctx.createOscillator();
+            this.bgmOsc2.type = 'sine';
+            this.bgmOsc2.frequency.setValueAtTime(58.5, this.ctx.currentTime);
+
+            // Low-pass filter to make it a deep dark rumble
+            const filter = this.ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(140, this.ctx.currentTime);
+
+            this.bgmOsc1.connect(filter);
+            this.bgmOsc2.connect(filter);
+            filter.connect(this.bgmGain);
+
+            this.bgmOsc1.start();
+            this.bgmOsc2.start();
+
+            // Heartbeat/Sonar Ping interval every 4s
+            this.bgmInterval = setInterval(() => {
+                if (!this.isMuted && currentGameId) {
+                    this.playSonarPing();
+                }
+            }, 4000);
+        } catch (e) {
+            console.warn("BGM start failed", e);
+        }
+    },
+
+    stopBGM() {
+        if (this.bgmInterval) {
+            clearInterval(this.bgmInterval);
+            this.bgmInterval = null;
+        }
+        if (this.bgmOsc1) {
+            try {
+                this.bgmOsc1.stop();
+                this.bgmOsc1.disconnect();
+            } catch (_) {}
+            this.bgmOsc1 = null;
+        }
+        if (this.bgmOsc2) {
+            try {
+                this.bgmOsc2.stop();
+                this.bgmOsc2.disconnect();
+            } catch (_) {}
+            this.bgmOsc2 = null;
+        }
+    },
+
+    playSonarPing() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(840, now);
+        osc.frequency.exponentialRampToValueAtTime(830, now + 1.2);
+        gain.gain.setValueAtTime(0.02, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 1.2);
+    },
+
+    // 1. Tiếng súng pháo nổ giòn giã (Heavy Cannon Shot)
+    playCannon() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        // Low boom oscillator
+        const osc = this.ctx.createOscillator();
+        const oscGain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(140, now);
+        osc.frequency.exponentialRampToValueAtTime(30, now + 0.35);
+
+        oscGain.gain.setValueAtTime(0.4, now);
+        oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+        osc.connect(oscGain);
+        oscGain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.35);
+
+        // Cannon Blast Noise
+        const bufferSize = this.ctx.sampleRate * 0.4;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(800, now);
+        filter.frequency.exponentialRampToValueAtTime(60, now + 0.4);
+
+        const noiseGain = this.ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.5, now);
+        noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+
+        noise.connect(filter);
+        filter.connect(noiseGain);
+        noiseGain.connect(this.ctx.destination);
+        noise.start(now);
+    },
+
+    // 2. Tiếng đạn nổ bắn trúng mục tiêu (Explosive Hit Metal Impact)
+    playHit() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        // Sub blast
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(260, now);
+        osc.frequency.exponentialRampToValueAtTime(45, now + 0.5);
+
+        gain.gain.setValueAtTime(0.45, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.5);
+
+        // High metallic shrapnel
+        const oscHigh = this.ctx.createOscillator();
+        const highGain = this.ctx.createGain();
+        oscHigh.type = 'square';
+        oscHigh.frequency.setValueAtTime(950, now);
+        oscHigh.frequency.exponentialRampToValueAtTime(220, now + 0.25);
+        highGain.gain.setValueAtTime(0.2, now);
+        highGain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+        oscHigh.connect(highGain);
+        highGain.connect(this.ctx.destination);
+        oscHigh.start(now);
+        oscHigh.stop(now + 0.25);
+    },
+
+    // 3. Tiếng bắn trượt (Water Splash / Miss)
+    playMiss() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        const bufferSize = this.ctx.sampleRate * 0.35;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(1400, now);
+        filter.frequency.exponentialRampToValueAtTime(200, now + 0.35);
+        filter.Q.value = 3.0;
+
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.25, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.ctx.destination);
+        noise.start(now);
+    },
+
+    // 4. Tiếng tàu chìm (Ship Sunk - Deep Alarm & Heavy Rupture)
+    playShipSunk() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        // Heavy catastrophic explosion
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(120, now);
+        osc.frequency.exponentialRampToValueAtTime(20, now + 1.2);
+
+        gain.gain.setValueAtTime(0.6, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 1.2);
+
+        // Sinking Siren Alert (two pulses)
+        [0.1, 0.5, 0.9].forEach(delay => {
+            const siren = this.ctx.createOscillator();
+            const sGain = this.ctx.createGain();
+            siren.type = 'sawtooth';
+            siren.frequency.setValueAtTime(440, now + delay);
+            siren.frequency.linearRampToValueAtTime(220, now + delay + 0.3);
+            sGain.gain.setValueAtTime(0.25, now + delay);
+            sGain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.3);
+            siren.connect(sGain);
+            sGain.connect(this.ctx.destination);
+            siren.start(now + delay);
+            siren.stop(now + delay + 0.3);
+        });
+    },
+
+    // 5. Tiếng chiến thắng (Victory Fanfare)
+    playWin() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+        const notes = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99]; // C - E - G - C - E - G
+        notes.forEach((freq, idx) => {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            const startTime = now + idx * 0.15;
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, startTime);
+            gain.gain.setValueAtTime(0.35, startTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.6);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(startTime);
+            osc.stop(startTime + 0.6);
+        });
+    },
+
+    // 6. Tiếng thất bại (Defeat Power-Down)
+    playLose() {
+        if (this.isMuted) return;
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(320, now);
+        osc.frequency.exponentialRampToValueAtTime(40, now + 1.8);
+        gain.gain.setValueAtTime(0.35, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.8);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 1.8);
+    }
+};
+
+function toggleAudio() {
+    SoundFX.toggleMute();
+}
 
 // ================= INITIALIZATION =================
 // Run this when the script loads to check for existing session
 document.addEventListener("DOMContentLoaded", () => {
+    // Unlock AudioContext on first user click or touch
+    const unlockAudio = () => {
+        SoundFX.init();
+        document.removeEventListener('click', unlockAudio);
+        document.removeEventListener('keydown', unlockAudio);
+    };
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
+
     // Add Enter key listeners for login
     const inputs = [document.getElementById('username'), document.getElementById('password')];
     inputs.forEach(input => {
@@ -46,6 +382,7 @@ document.addEventListener("DOMContentLoaded", () => {
             .then(response => {
                 if (response.ok) {
                     document.getElementById('display-user').innerText = currentUser;
+                    checkAdminRole();
                     showScreen('lobby-screen');
                     response.json().then(loadHistory);
                     loadFriends();
@@ -129,6 +466,7 @@ async function handleAuth() {
             currentUser = user;
             authHeader = header;
             document.getElementById('display-user').innerText = user;
+            checkAdminRole();
 
             showScreen('lobby-screen');
             loadHistory(await loginResponse.json());
@@ -253,14 +591,26 @@ function getOpponentName(game) {
 // ================= GAME LOGIC =================
 function enterGame(game) {
     currentGameId = game.gameId;
-    lastSunkCount = 0;
+    lastSunkCount = (game.opponent && game.opponent.sunkShips) ? game.opponent.sunkShips.length : 0;
+    lastHitCountOpponent = (game.opponent && game.opponent.hits) ? game.opponent.hits.length : 0;
+    lastMissCountOpponent = (game.opponent && game.opponent.misses) ? game.opponent.misses.length : 0;
+    lastHitCountSelf = (game.self && game.self.hits) ? game.self.hits.length : 0;
+    lastMissCountSelf = (game.self && game.self.misses) ? game.self.misses.length : 0;
+    lastTurnPlayer = game.currentTurnPlayerId;
+
     document.getElementById('display-game-id').innerText = game.gameId;
     showScreen('game-screen');
     renderGame(game);
     subscribeToGame(currentGameId);
+
+    // Bắt đầu nhạc nền hồi hộp khi vào trận
+    SoundFX.startBGM();
 }
 
 function leaveGame() {
+    SoundFX.stopBGM();
+    hideCombatBanner();
+
     // Do NOT disconnect. Just unsubscribe from the game.
     if (gameSub) gameSub.unsubscribe();
     if (errorSub) errorSub.unsubscribe();
@@ -277,34 +627,38 @@ function leaveGame() {
     showScreen('lobby-screen');
 }
 
-function connectWebSocket() {
-    // Prevent double connection
-    if (stompClient && stompClient.connected) return;
+function showCombatBanner(text, icon = "🎯", isEnemy = false, duration = 3000) {
+    const banner = document.getElementById('combat-banner');
+    const textEl = document.getElementById('banner-text');
+    const iconEl = document.getElementById('banner-icon');
+    if (!banner || !textEl) return;
 
-    const socket = new SockJS(WS_URL);
-    stompClient = Stomp.over(socket);
-    stompClient.debug = null;
+    if (bannerTimeout) clearTimeout(bannerTimeout);
 
-    stompClient.connect({}, function () {
-        // ALWAYS subscribe to personal notifications
-        stompClient.subscribe(`/topic/user/${currentUser}/notifications`, function (msg) {
-            const notif = JSON.parse(msg.body);
-            if (notif.type === 'CHALLENGE') {
-                handleIncomingChallenge(notif);
-            }
-        });
+    textEl.innerText = text;
+    if (iconEl) iconEl.innerText = icon;
 
-        // IF inside a game, subscribe to game updates
-        if (currentGameId) {
-            stompClient.subscribe(`/topic/game/${currentGameId}/${currentUser}`, function (msg) {
-                renderGame(JSON.parse(msg.body));
-            });
-            stompClient.subscribe(`/topic/game/${currentGameId}/${currentUser}/error`, function (msg) {
-                showError(JSON.parse(msg.body).message);
-            });
-        }
-    });
+    if (isEnemy) {
+        banner.classList.add('enemy-hit');
+    } else {
+        banner.classList.remove('enemy-hit');
+    }
+
+    banner.classList.remove('hidden');
+    bannerTimeout = setTimeout(() => {
+        banner.classList.add('hidden');
+    }, duration);
 }
+
+function hideCombatBanner() {
+    const banner = document.getElementById('combat-banner');
+    if (banner) banner.classList.add('hidden');
+    if (bannerTimeout) {
+        clearTimeout(bannerTimeout);
+        bannerTimeout = null;
+    }
+}
+
 // ================= RENDERING =================
 const ALL_SHIPS = [
     { id: "Carrier", size: 5 }, { id: "Battleship", size: 4 },
@@ -313,6 +667,7 @@ const ALL_SHIPS = [
 ];
 
 function renderGame(state) {
+    const prevState = lastKnownState;
     lastKnownState = state;
 
     document.getElementById('game-state').innerText = state.state;
@@ -321,26 +676,56 @@ function renderGame(state) {
     const turnSpan = document.getElementById('turn-indicator');
     if(state.state === 'ACTIVE') {
         if(state.currentTurnPlayerId === currentUser) {
-            turnSpan.innerText = " (YOUR TURN)";
-            turnSpan.style.color = "#2ecc71";
+            turnSpan.innerText = " [YOUR TURN - READY TO FIRE]";
+            turnSpan.style.color = "#00f0ff";
+            turnSpan.style.textShadow = "0 0 10px rgba(0, 240, 255, 0.7)";
         } else {
-            turnSpan.innerText = " (ENEMY TURN)";
-            turnSpan.style.color = "#e74c3c";
+            turnSpan.innerText = " [ENEMY TURN - ENEMY FIRING]";
+            turnSpan.style.color = "#ff2a5f";
+            turnSpan.style.textShadow = "0 0 10px rgba(255, 42, 95, 0.7)";
         }
     } else {
         turnSpan.innerText = "";
     }
 
-    if (state.opponent && state.opponent.sunkShips) {
-        const currentCount = state.opponent.sunkShips.length;
-        if (currentCount > lastSunkCount) {
-            // We have a new sunk ship!
-            // Find which one is new (optional, but nice)
-            // Simple approach: Just alert
-            showError("ENEMY SHIP SUNK!");
-            // Note: showError uses the red toast, which is perfect for this.
+    // Audio & Combat Event Detection
+    if (state.state === 'ACTIVE' || state.state === 'FINISHED') {
+        const currentOppHits = (state.opponent && state.opponent.hits) ? state.opponent.hits.length : 0;
+        const currentOppMisses = (state.opponent && state.opponent.misses) ? state.opponent.misses.length : 0;
+        const currentOppSunk = (state.opponent && state.opponent.sunkShips) ? state.opponent.sunkShips.length : 0;
+
+        const currentSelfHits = (state.self && state.self.hits) ? state.self.hits.length : 0;
+        const currentSelfMisses = (state.self && state.self.misses) ? state.self.misses.length : 0;
+
+        // 1. Did current user shoot? (opp hits or opp misses increased)
+        if (currentOppHits > lastHitCountOpponent) {
+            if (currentOppSunk > lastSunkCount) {
+                // Enemy ship sunk!
+                SoundFX.playShipSunk();
+                showCombatBanner("💥 ENEMY SHIP SUNK! TAKE ANOTHER SHOT!", "🔥", false, 3500);
+            } else {
+                // Target hit!
+                SoundFX.playHit();
+                showCombatBanner("🎯 TARGET HIT! TAKE ANOTHER SHOT!", "🎯", false, 3000);
+            }
+        } else if (currentOppMisses > lastMissCountOpponent) {
+            // Splash / Miss
+            SoundFX.playMiss();
         }
-        lastSunkCount = currentCount;
+
+        // 2. Did enemy shoot me? (self hits or self misses increased)
+        if (currentSelfHits > lastHitCountSelf) {
+            SoundFX.playHit();
+            showCombatBanner("⚠️ FLEET HIT! ENEMY TAKES ANOTHER SHOT!", "🚨", true, 3000);
+        } else if (currentSelfMisses > lastMissCountSelf) {
+            SoundFX.playMiss();
+        }
+
+        lastHitCountOpponent = currentOppHits;
+        lastMissCountOpponent = currentOppMisses;
+        lastSunkCount = currentOppSunk;
+        lastHitCountSelf = currentSelfHits;
+        lastMissCountSelf = currentSelfMisses;
     }
 
     // Setup Controls Logic
@@ -367,8 +752,14 @@ function renderGame(state) {
 
     // Game Over Alert
     if (state.state === 'FINISHED') {
-        if (state.winnerId === currentUser) alert("VICTORY!");
-        else alert("DEFEAT!");
+        SoundFX.stopBGM();
+        if (state.winnerId === currentUser) {
+            SoundFX.playWin();
+            showCombatBanner("🏆 VICTORY! ENEMY FLEET ANNIHILATED!", "🏆", false, 6000);
+        } else {
+            SoundFX.playLose();
+            showCombatBanner("💀 DEFEAT! YOUR FLEET HAS BEEN SUNK!", "💀", true, 6000);
+        }
     }
 }
 
@@ -402,8 +793,11 @@ function renderShipYard(placedShips) {
 
 function handleGridClick(isOpponent, x, y) {
     if (isOpponent) {
-        // ... existing shooting logic ...
         if(!stompClient) return;
+
+        // Phát âm thanh tiếng súng nổ ngay khi khai hoả
+        SoundFX.playCannon();
+
         stompClient.send(`/app/game/${currentGameId}/move`,
             { "playerId": currentUser },
             JSON.stringify({ target: { x, y } })
@@ -659,6 +1053,7 @@ async function handleGuestLogin() {
         sessionStorage.setItem("battleship_token", token);
 
         document.getElementById('display-user').innerText = currentUser;
+        checkAdminRole();
         showScreen('lobby-screen');
         loadHistory([]); // New guest has no history
         loadFriends();
@@ -814,7 +1209,13 @@ function connectGlobalSocket() {
             }
         });
 
-        // 2. If we happened to be in a game (e.g. reconnect logic), subscribe now
+        // 2. Real-time Online Users Presence topic
+        stompClient.subscribe('/topic/online-users', function (msg) {
+            const onlineUsers = JSON.parse(msg.body);
+            updateOnlineUsersUI(onlineUsers);
+        });
+
+        // 3. If we happened to be in a game (e.g. reconnect logic), subscribe now
         if (currentGameId) {
             subscribeToGame(currentGameId);
         }
@@ -884,4 +1285,265 @@ function toggleOrientation() {
     if (selectedShipType && !pendingPlacement) {
         renderGame(lastKnownState);
     }
+}
+
+// ================= ADMIN DASHBOARD FUNCTIONS =================
+
+let cachedOnlineUsers = [];
+
+function updateOnlineUsersUI(onlineList) {
+    cachedOnlineUsers = Array.isArray(onlineList) ? onlineList : Object.keys(onlineList);
+
+    const count = cachedOnlineUsers.length;
+    const badge = document.getElementById('admin-radar-badge');
+    const headerCount = document.getElementById('admin-online-count');
+    if (badge) badge.innerText = count;
+    if (headerCount) headerCount.innerText = `${count} Online`;
+
+    const listEl = document.getElementById('admin-online-list');
+    if (listEl) {
+        listEl.innerHTML = '';
+        if (count === 0) {
+            listEl.innerHTML = '<li>No active operatives detected on radar.</li>';
+        } else {
+            cachedOnlineUsers.forEach(uname => {
+                const li = document.createElement('li');
+                li.innerHTML = `
+                    <span><span class="status-dot online"></span> <strong>${uname}</strong></span>
+                    <button class="small secondary" onclick="challengePlayerDirect('${uname}')">⚔ Challenge</button>
+                `;
+                listEl.appendChild(li);
+            });
+        }
+    }
+}
+
+function checkAdminRole() {
+    const btn = document.getElementById('btn-admin-hq');
+    if (btn) {
+        if (currentUser && currentUser.toLowerCase() === 'quanglb') {
+            btn.classList.remove('hidden');
+        } else {
+            btn.classList.add('hidden');
+        }
+    }
+}
+
+function openAdminModal() {
+    if (!currentUser || currentUser.toLowerCase() !== 'quanglb') {
+        alert("Access Denied: Only account 'quanglb' is authorized to access Admin HQ.");
+        return;
+    }
+    showScreen('admin-screen');
+    loadAdminOnline();
+    loadAdminUsers();
+    loadAdminGames();
+}
+
+function closeAdminModal() {
+    showScreen('lobby-screen');
+}
+
+function switchAdminTab(tabName) {
+    ['online', 'users', 'games'].forEach(t => {
+        const tabEl = document.getElementById(`tab-${t}`);
+        const btnEl = document.getElementById(`tab-btn-${t}`);
+        if (tabEl) tabEl.classList.toggle('hidden', t !== tabName);
+        if (btnEl) btnEl.classList.toggle('active', t === tabName);
+    });
+}
+
+async function loadAdminOnline() {
+    try {
+        const res = await fetch(`${API_URL}/admin/online`, { headers: { 'Authorization': authHeader } });
+        if (res.ok) {
+            const list = await res.json();
+            updateOnlineUsersUI(list);
+        }
+    } catch (e) {
+        console.error("Failed to load online users", e);
+    }
+}
+
+async function loadAdminUsers() {
+    try {
+        const res = await fetch(`${API_URL}/admin/users`, { headers: { 'Authorization': authHeader } });
+        if (!res.ok) return;
+        const users = await res.json();
+
+        const tbody = document.getElementById('admin-users-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        users.forEach(u => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><strong>${u.username}</strong></td>
+                <td>
+                    <span class="table-badge ${u.online ? 'online' : 'offline'}">
+                        ${u.online ? 'ONLINE' : 'OFFLINE'}
+                    </span>
+                </td>
+                <td>${u.totalGames}</td>
+                <td>
+                    <div class="table-actions">
+                        <button class="small secondary" onclick="adminResetPassword('${u.username}')">🔑 Reset Pass</button>
+                        <button class="small btn-cancel" onclick="adminDeleteUser('${u.username}')">🗑 Delete</button>
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (e) {
+        console.error("Failed to load admin users", e);
+    }
+}
+
+async function adminCreateUser() {
+    const username = document.getElementById('admin-new-username').value.trim();
+    const password = document.getElementById('admin-new-password').value.trim();
+
+    if (!username || !password) {
+        return alert("Please enter both username and password");
+    }
+
+    try {
+        const res = await fetch(`${API_URL}/admin/users`, {
+            method: 'POST',
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ username, password })
+        });
+
+        if (res.ok) {
+            alert(`User ${username} created!`);
+            document.getElementById('admin-new-username').value = '';
+            document.getElementById('admin-new-password').value = '';
+            loadAdminUsers();
+        } else {
+            const err = await res.json();
+            alert(err.message || "Failed to create user");
+        }
+    } catch (e) {
+        alert("Error creating user: " + e.message);
+    }
+}
+
+async function adminResetPassword(username) {
+    const newPass = prompt(`Enter new password for ${username} (min 6 characters):`);
+    if (!newPass) return;
+    if (newPass.length < 6) return alert("Password must be at least 6 characters");
+
+    try {
+        const res = await fetch(`${API_URL}/admin/users/${username}/password`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ password: newPass })
+        });
+
+        if (res.ok) {
+            alert(`Password updated for ${username}!`);
+        } else {
+            alert("Failed to update password");
+        }
+    } catch (e) {
+        alert("Error: " + e.message);
+    }
+}
+
+async function adminDeleteUser(username) {
+    if (!confirm(`Are you sure you want to permanently delete user "${username}"?`)) return;
+
+    try {
+        const res = await fetch(`${API_URL}/admin/users/${username}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': authHeader }
+        });
+
+        if (res.ok) {
+            alert(`User ${username} deleted`);
+            loadAdminUsers();
+        } else {
+            alert("Failed to delete user");
+        }
+    } catch (e) {
+        alert("Error: " + e.message);
+    }
+}
+
+async function loadAdminGames() {
+    try {
+        const res = await fetch(`${API_URL}/admin/games`, { headers: { 'Authorization': authHeader } });
+        if (!res.ok) return;
+        const games = await res.json();
+
+        const tbody = document.getElementById('admin-games-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (games.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">No matches in system.</td></tr>';
+            return;
+        }
+
+        games.forEach(g => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><small>${g.gameId.substring(0, 8)}...</small></td>
+                <td><span class="table-badge ${g.state === 'ACTIVE' ? 'online' : 'offline'}">${g.state}</span></td>
+                <td>${g.player1 || '-'} (${g.p1Ships} ships)</td>
+                <td>${g.player2 || '-'} (${g.p2Ships} ships)</td>
+                <td>${g.winnerId ? `🏆 ${g.winnerId}` : '-'}</td>
+                <td>
+                    <div class="table-actions">
+                        ${g.state !== 'FINISHED' ? `<button class="small secondary" onclick="adminTerminateGame('${g.gameId}')">🛑 End</button>` : ''}
+                        <button class="small btn-cancel" onclick="adminDeleteGame('${g.gameId}')">🗑 Delete</button>
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (e) {
+        console.error("Failed to load admin games", e);
+    }
+}
+
+async function adminTerminateGame(gameId) {
+    if (!confirm(`Force end match ${gameId}?`)) return;
+    try {
+        const res = await fetch(`${API_URL}/admin/games/${gameId}/terminate`, {
+            method: 'POST',
+            headers: { 'Authorization': authHeader }
+        });
+        if (res.ok) {
+            loadAdminGames();
+        }
+    } catch (e) {
+        alert("Error terminating game: " + e.message);
+    }
+}
+
+async function adminDeleteGame(gameId) {
+    if (!confirm(`Permanently delete match ${gameId}?`)) return;
+    try {
+        const res = await fetch(`${API_URL}/admin/games/${gameId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': authHeader }
+        });
+        if (res.ok) {
+            loadAdminGames();
+        }
+    } catch (e) {
+        alert("Error deleting game: " + e.message);
+    }
+}
+
+function challengePlayerDirect(username) {
+    if (username === currentUser) return alert("You cannot challenge yourself!");
+    sendInvite(username);
 }

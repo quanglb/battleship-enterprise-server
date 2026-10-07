@@ -23,16 +23,23 @@ public class GameTest {
         // 4. Verify Game Started
         assertEquals(GameState.ACTIVE, game.getState());
 
-        // 5. P1 fires (Valid)
-        assertDoesNotThrow(() -> game.fire("p1", new Coordinate(0, 0)));
+        // 5. P1 fires and HITS Carrier at (0, 0)
+        ShotResult hitResult = game.fire("p1", new Coordinate(0, 0));
+        assertEquals(ShotResult.HIT, hitResult);
+        assertEquals("p1", game.getCurrentTurnPlayerId(), "P1 should keep turn after HIT");
 
-        // 6. P1 fires again (Invalid - turn switched)
+        // 6. P1 fires again at MISS coordinate (9, 9)
+        ShotResult missResult = game.fire("p1", new Coordinate(9, 9));
+        assertEquals(ShotResult.MISS, missResult);
+        assertEquals("p2", game.getCurrentTurnPlayerId(), "Turn switches to P2 after MISS");
+
+        // 7. P1 fires again (Invalid - turn switched)
         assertThrows(IllegalArgumentException.class, () ->
-                game.fire("p1", new Coordinate(0, 1))
+                game.fire("p1", new Coordinate(9, 8))
         );
 
-        // 7. P2 fires (Valid)
-        assertDoesNotThrow(() -> game.fire("p2", new Coordinate(0, 0)));
+        // 8. P2 fires (Valid)
+        assertDoesNotThrow(() -> game.fire("p2", new Coordinate(9, 9)));
     }
     @Test
     void testJoin_GameAlreadyStarted() {

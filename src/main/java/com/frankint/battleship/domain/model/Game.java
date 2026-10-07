@@ -14,6 +14,10 @@ public class Game {
     private String winnerId;
     public static final int FLEET_SIZE = 5;
 
+    public void terminate() {
+        this.state = GameState.FINISHED;
+    }
+
     // Constructor for a new game
     public Game(Player player1) {
         this.id = UUID.randomUUID().toString();
@@ -88,8 +92,10 @@ public class Game {
             winnerId = playerId;
         }
 
-        // 4. Switch Turn (Only reached if no exception was thrown)
-        switchTurn();
+        // 4. Switch Turn only when shot was a MISS
+        if (result == ShotResult.MISS) {
+            switchTurn();
+        }
 
         return result;
     }

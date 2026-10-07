@@ -93,4 +93,12 @@ public class PostgresGameRepository implements GameRepository {
             }
         });
     }
+
+    @Override
+    public List<Game> findAll() {
+        return jpaRepository.findAll()
+                .stream()
+                .map(mapper::toDomain)
+                .toList();
+    }
 }
